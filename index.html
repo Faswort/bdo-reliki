@@ -55,6 +55,10 @@
   .savebtn { background:var(--accent); color:#1a1508; border:1px solid var(--accent); font-weight:600; }
   .scrollarea { max-height:60vh; overflow:auto; }
   .panelempty { color:var(--muted); padding:16px 0; }
+  #toast { position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:#1e232b; border:1px solid var(--border); color:var(--text); padding:11px 18px; border-radius:10px; font-size:14px; box-shadow:0 6px 18px rgba(0,0,0,.4); display:none; z-index:99; max-width:90vw; }
+  #toast.ok { border-color:#3f6b36; color:var(--green); }
+  #toast.err { border-color:#6b2f2f; color:#e06666; }
+  #importFile { display:none; }
 </style>
 </head>
 <body>
@@ -89,6 +93,8 @@
   <div id="results"></div>
 </div>
 
+<div id="toast"></div>
+
 <div class="overlay" id="overlay">
   <div class="modal">
     <h2>Каталог эффектов и редактирование</h2>
@@ -103,6 +109,9 @@
     <div class="modal-footer">
       <button class="btn" id="addCombo">+ Добавить комбинацию</button>
       <button class="btn" id="addStone">+ Добавить камень</button>
+      <button class="btn" id="exportData">Экспорт</button>
+      <button class="btn" id="importData">Импорт</button>
+      <input type="file" id="importFile" accept=".json,application/json">
       <button class="btn" id="resetData">Сбросить правки</button>
       <button class="btn savebtn" id="saveData">Сохранить</button>
       <button class="btn" id="closeModal">Закрыть</button>
@@ -207,6 +216,18 @@ function render(){
 }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+let toastTimer = null;
+function showToast(msg, ok){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = ok ? 'ok' : 'err';
+  t.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.style.display = 'none'; }, 3200);
+}
+function saveLS(k, v){ try{ localStorage.setItem(k, v); return true; }catch(e){ return false; } }
+function removeLS(k){ try{ localStorage.removeItem(k); return true; }catch(e){ return false; } }
+
 /* ---------- Catalog / Editor ---------- */
 const overlay = document.getElementById('overlay');
 const panelCombo = document.getElementById('panel-combo');
@@ -272,24 +293,34 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 }));
 
 document.getElementById('saveData').addEventListener('click', () => {
-  collect();
-  for(const c of COMBOS){ c.base = c.effects.map(baseOf); }
-  localStorage.setItem(LS_COMBOS, JSON.stringify(COMBOS));
-  localStorage.setItem(LS_STONES, JSON.stringify(STONEMAP));
-  refreshDatalists();
-  render();
+  let saved = true;
+  try{
+    collect();
+    for(const c of COMBOS){ c.base = c.effects.map(baseOf); }
+    const okC = saveLS(LS_COMBOS, JSON.stringify(COMBOS));
+    const okS = saveLS(LS_STONES, JSON.stringify(STONEMAP));
+    saved = okC && okS;
+    refreshDatalists();
+    render();
+  }catch(err){
+    saved = false;
+    showToast('Ошибка: ' + err.message, false);
+  }
   overlay.classList.remove('open');
+  if(saved){ showToast('Сохранено', true); }
+  else { showToast('Не удалось записать в браузер (localStorage заблокирован). Правки действуют до перезагрузки — используй «Экспорт».', false); }
 });
 
 document.getElementById('resetData').addEventListener('click', () => {
-  localStorage.removeItem(LS_COMBOS);
-  localStorage.removeItem(LS_STONES);
+  removeLS(LS_COMBOS);
+  removeLS(LS_STONES);
   COMBOS = loadCombos();
   STONEMAP = loadStones();
   for(const c of COMBOS){ c.base = c.effects.map(baseOf); }
   refreshDatalists();
   renderCatalog();
   render();
+  showToast('Правки сброшены', true);
 });
 
 document.getElementById('addCombo').addEventListener('click', () => {
@@ -310,6 +341,49 @@ document.getElementById('panel-combo').addEventListener('click', e => {
 document.getElementById('panel-stone').addEventListener('click', e => {
   const del = e.target.dataset.dels;
   if(del !== undefined){ delete STONEMAP[del]; renderCatalog(); }
+});
+
+document.getElementById('exportData').addEventListener('click', () => {
+  collect();
+  for(const c of COMBOS){ c.base = c.effects.map(baseOf); }
+  const data = { version: 'v3', combos: COMBOS, stones: STONEMAP };
+  const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'реликвии-правки.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  showToast('Экспортировано в реликвии-правки.json', true);
+});
+
+document.getElementById('importData').addEventListener('click', () => {
+  document.getElementById('importFile').click();
+});
+document.getElementById('importFile').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if(!file) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try{
+      const d = JSON.parse(rd.result);
+      if(!Array.isArray(d.combos) || !d.stones || typeof d.stones !== 'object'){ throw new Error('неверный формат файла'); }
+      COMBOS = d.combos;
+      STONEMAP = d.stones;
+      for(const c of COMBOS){ c.base = c.effects.map(baseOf); }
+      saveLS(LS_COMBOS, JSON.stringify(COMBOS));
+      saveLS(LS_STONES, JSON.stringify(STONEMAP));
+      refreshDatalists();
+      renderCatalog();
+      render();
+      showToast('Данные импортированы', true);
+    }catch(err){
+      showToast('Ошибка импорта: ' + err.message, false);
+    }
+  };
+  rd.readAsText(file);
+  e.target.value = '';
 });
 
 [inputEff, inputName, inputStone].forEach(inp => inp.addEventListener('input', render));
